@@ -374,14 +374,32 @@ async function loadFeed(){
   if(!ACTUALS_URL) return;
   try{
     const txt = await (await fetch(ACTUALS_URL, {cache:'no-store'})).text();
-    const lines = txt.trim().split(/\r?\n/); const head = lines.shift().split(',').map(s=>s.trim().toLowerCase());
+    const lines = txt.trim().split(/\r?\n/); const head = lines.shift().split(',').map(s=>s.trim().toLowerCase().replace(/"/g,''));
     const ix = k=>head.indexOf(k);
-    const rows = lines.map(l=>l.split(',')).map(r=>({asof:r[ix('as_of_date')], d:r[ix('stay_night')], u:r[ix('unit_type')], fam:r[ix('rate_family')], rn:+r[ix('room_nights')], net:+r[ix('net_value')]}));
+    const rows = lines.map(l=>l.split(',').map(x=>x.replace(/"/g,'').trim())).map(r=>({asof:r[ix('as_of_date')], d:r[ix('stay_night')], u:r[ix('unit_type')], fam:r[ix('rate_family')], rn:+r[ix('room_nights')], net:+r[ix('net_value')]}));
+    const norm = d => { if(!d) return d; if(/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0,10); const m=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m? `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}` : d; };
+    rows.forEach(r=>{ r.asof=norm(r.asof); r.d=norm(r.d); });
     const asof = rows.map(r=>r.asof).sort().pop(); const latest = rows.filter(r=>r.asof===asof && r.d && r.d.slice(0,4)===String(D.target));
+    if(!latest.length) throw new Error('no rows');
+    // 1. rebuild live components (future nights: on the books, cancellation-adjusted)
     const comp = JSON.parse(JSON.stringify(D.live)); comp.as_of = asof;
     for(const u of UNITS){ const c=comp.units[u]; c.otb_gross.fill(0); c.otb_net.fill(0); c.otb_rev.fill(0); for(let i=0;i<comp.days.length;i++){ const h=Math.max(0,Math.min(400,daysBetween(asof,comp.days[i]))); const m=+comp.days[i].slice(5,7); c.c[i]=Math.max(D.curves_full[m]? D.curves_full[m][h]:0.001, 0.001); c.w[i]=c.c[i]; } }
     const idx = Object.fromEntries(comp.days.map((d,i)=>[d,i]));
-    for(const r of latest){ const c=comp.units[r.u]; const i=idx[r.d]; if(!c||i==null) continue; if(r.fam==='Conference / group') continue; const h=Math.max(0,Math.min(400,daysBetween(asof,r.d))); const pc=(D.cancel_full[r.fam]||D.cancel_full['Flexible'])[h]; c.otb_gross[i]+=r.rn; c.otb_net[i]+=r.rn*(1-pc); c.otb_rev[i]+=r.net*(1-pc); }
+    // 2. rebuild actuals for the target year (past and future nights, live rooms)
+    const at = D.actual_transient[String(D.target)], ag = D.actual_group[String(D.target)];
+    const aIdx = Object.fromEntries(at.days.map((d,i)=>[d,i]));
+    for(const u of UNITS){ at.units[u] = {rn:new Array(at.days.length).fill(0), net:new Array(at.days.length).fill(0)}; }
+    ag.units = {'Conference / group':{rn:new Array(ag.days.length).fill(0), net:new Array(ag.days.length).fill(0)}};
+    for(const r of latest){
+      const k = aIdx[r.d]; if(k==null) continue;
+      if(r.fam==='Conference / group'){ ag.units['Conference / group'].rn[k]+=r.rn; ag.units['Conference / group'].net[k]+=r.net; continue; }
+      if(!at.units[r.u]) continue;
+      at.units[r.u].rn[k]+=r.rn; at.units[r.u].net[k]+=r.net;
+      const c=comp.units[r.u]; const i=idx[r.d]; if(!c||i==null) continue;
+      const h=daysBetween(asof,r.d); if(h<0) continue;
+      const pc=(D.cancel_full[r.fam]||D.cancel_full['Flexible'])[Math.min(400,h)];
+      c.otb_gross[i]+=r.rn; c.otb_net[i]+=r.rn*(1-pc); c.otb_rev[i]+=r.net*(1-pc);
+    }
     liveComp = comp; document.getElementById('asof').textContent = new Date(asof).toLocaleDateString('en-IE',{day:'numeric',month:'long',year:'numeric'});
     document.getElementById('feedstate').textContent = '· live feed'; render();
   }catch(e){ document.getElementById('feedstate').textContent = '· feed unavailable, showing baked data'; }
