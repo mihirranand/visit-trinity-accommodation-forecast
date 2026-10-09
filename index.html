@@ -303,13 +303,26 @@ function render(){
   document.getElementById('assumpNote').textContent = s.isLive ? `Growth default ${(D.growth_default*100).toFixed(1)}% = half of the latest season-on-season transient growth (${(D.growth_last*100).toFixed(1)}%; the year before: ${(D.growth_prev*100).toFixed(1)}%). It scales only the prior; as bookings arrive the pace estimate takes over. Group default ${fmt(D.group.default_rn)} room-nights = average of the last two seasons.` : `Validation forecasts use the growth assumption that would have been available at the time (${(D.validation_growth*100).toFixed(1)}%, half of 2024→25 growth) and are not affected by the inputs below.`;
 }
 
-function paceCompare(PS){
-  PS = PS || D.pace; const p27 = PS[2027], p26 = PS[2026]; if(!p27.length) return null;
-  const last = p27[p27.length-1]; const dto = last.days_to_open;
-  let best=null; for(const r of p26){ if(best==null || Math.abs(r.days_to_open-dto)<Math.abs(best.days_to_open-dto)) best=r; }
-  return {now:last.rn, ly:best.rn, idx: best.rn? last.rn/best.rn : 0, dto};
+function liveOtbTotals(){
+  // today's transient room-nights / net on the books for the target season, from the live feed if loaded
+  if(!liveComp || !liveComp.as_of) return null;
+  let rn=0, net=0, byM={}, byU={};
+  for(const u of UNITS){ const c=liveComp.units[u]; if(!c) continue; let ur=0, un=0;
+    for(let i=0;i<liveComp.days.length;i++){ const g=c.otb_gross[i]||0, v=(c.otb_rev_gross? c.otb_rev_gross[i] : c.otb_rev[i])||0; rn+=g; net+=v; ur+=g; un+=v; const m=+liveComp.days[i].slice(5,7); byM[m]=(byM[m]||0)+g; }
+    byU[u]={rn:ur, net:un}; }
+  const dto = daysBetween(liveComp.as_of, D.season_start);
+  return {date:liveComp.as_of, days_to_open:dto, rn:Math.round(rn), net:Math.round(net), by_month:byM, by_unit:byU};
 }
-
+function nearest(arr, dto){ return arr.reduce((b,r)=>(b==null||Math.abs(r.days_to_open-dto)<Math.abs(b.days_to_open-dto))?r:b, null); }
+function paceCompare(PS){
+  PS = PS || D.pace;
+  let cur = PS[2027][PS[2027].length-1];
+  const L = liveOtbTotals();
+  if(L && PS===D.pace) cur = L;
+  else if(L && paceMkt!=='all' && L.by_unit[paceMkt]) cur = {days_to_open:L.days_to_open, rn:Math.round(L.by_unit[paceMkt].rn), net:Math.round(L.by_unit[paceMkt].net), by_month:{}};
+  const ly = nearest(PS[2026], cur.days_to_open);
+  return {now:cur.rn, ly:ly.rn, idx: ly.rn? cur.rn/ly.rn : 0, dto:cur.days_to_open, cur, lyRow:ly};
+}
 let paceZoom='full', paceMkt='all';
 function paceSrc(){ return paceMkt==='all' ? D.pace : D.pace_by_market[paceMkt]; }
 function renderPaceTabs(){ const tabs=[['all','All markets'],...UNITS.map(u=>[u,u])]; document.getElementById('paceTabs').innerHTML = tabs.map(([k,l])=>`<button data-u="${k}" class="${paceMkt===k?'on':''}">${l}</button>`).join(''); document.querySelectorAll('#paceTabs button').forEach(b=>b.onclick=()=>{paceMkt=b.dataset.u; renderPace();}); }
@@ -317,14 +330,14 @@ function renderPace(){
   renderPaceTabs();
   const PS = paceSrc();
   const colors = {2025:'#9CA3AF', 2026:'#6B7280', 2027:'#0569B9'};
-  const ds = [2025,2026,2027].map(y=>({label:`Summer ${y}`, data:PS[y].map(r=>({x:-r.days_to_open, y:r.rn})), borderColor:colors[y], borderWidth:y===2027?2.5:1.5, borderDash:y===2025?[6,4]:[], pointRadius:0, tension:.15, parsing:false}));
+  const _L = (paceMkt==='all')? liveOtbTotals() : null; const ds = [2025,2026,2027].map(y=>({label:`Summer ${y}`, data:(y===2027 && _L ? PS[y].concat([{days_to_open:_L.days_to_open, rn:_L.rn}]) : PS[y]).map(r=>({x:-r.days_to_open, y:r.rn})), borderColor:colors[y], borderWidth:y===2027?2.5:1.5, borderDash:y===2025?[6,4]:[], pointRadius:0, tension:.15, parsing:false}));
   if(paceChart) paceChart.destroy();
   paceChart = new Chart(document.getElementById('paceChart'), {type:'line', data:{datasets:ds}, options:{responsive:true, maintainAspectRatio:false, animation:false, interaction:{mode:'nearest', axis:'x', intersect:false},
     plugins:{legend:{display:false}, tooltip:{callbacks:{title:i=> (i[0].parsed.x<0? Math.abs(i[0].parsed.x)+' days before opening' : i[0].parsed.x+' days after opening'), label:i=> i.dataset.label+': '+fmt(i.parsed.y)+' room-nights on books'}}},
     scales:{x:{type:'linear', min:-300, max: paceZoom==='now' ? -(PS[2027][PS[2027].length-1].days_to_open)+7 : 110, grid:{display:false}, ticks:{color:'#6B7280', callback:v=> v===0?'opening':(v<0? Math.abs(v)+'d before' : v+'d after')}}, y:{beginAtZero:true, grid:{color:'#EEF0F3'}, ticks:{color:'#6B7280'}}}}});
   document.getElementById('paceLegend').innerHTML = [2025,2026,2027].map(y=>`<span><i style="border-color:${colors[y]}"></i>Summer ${y}</span>`).join('');
   const p = paceCompare(PS);
-  const l27 = PS[2027][PS[2027].length-1]; const l26 = PS[2026].reduce((b,r)=> (b==null||Math.abs(r.days_to_open-l27.days_to_open)<Math.abs(b.days_to_open-l27.days_to_open))?r:b, null);
+  const _pc = paceCompare(PS); const l27 = Object.assign({}, PS[2027][PS[2027].length-1], _pc.cur, {by_month: (_pc.cur.by_month && Object.keys(_pc.cur.by_month).length)? _pc.cur.by_month : PS[2027][PS[2027].length-1].by_month}); const l26 = PS[2026].reduce((b,r)=> (b==null||Math.abs(r.days_to_open-l27.days_to_open)<Math.abs(b.days_to_open-l27.days_to_open))?r:b, null);
   const l25 = PS[2025].reduce((b,r)=> (b==null||Math.abs(r.days_to_open-l27.days_to_open)<Math.abs(b.days_to_open-l27.days_to_open))?r:b, null);
   document.getElementById('paceKpis').innerHTML = [
     {l:`On the books · Summer 2027${paceMkt==='all'?'':' · '+paceMkt}`, v:fmt(l27.rn), s:`${eur(l27.net)} net · ${l27.days_to_open} days before opening`},
@@ -333,7 +346,7 @@ function renderPace(){
     {l:'Pace index vs 2026', v:(p.idx*100).toFixed(0)+'%', s:'early-season bookings are small; treat as directional'},
   ].map(x=>`<div class="kpi"><div class="l">${x.l}</div><div class="v">${x.v}</div><div class="s">${x.s}</div></div>`).join('');
   let rows=''; for(const m of [5,6,7,8]){ const a=l27.by_month[m]||0, b=l26.by_month[m]||0, c=l25.by_month[m]||0; rows+=`<tr><td>${new Date(2027,m-1,1).toLocaleDateString('en-IE',{month:'long'})}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${fmt(c)}</td><td class="${a>=b?'pos':'neg'}">${b? (a/b*100).toFixed(0)+'%':'–'}</td></tr>`; }
-  let mrows=''; for(const u of UNITS){ const q=D.pace_by_market[u]; const a=q[2027][q[2027].length-1]; const b=q[2026].reduce((bb,r)=>(bb==null||Math.abs(r.days_to_open-a.days_to_open)<Math.abs(bb.days_to_open-a.days_to_open))?r:bb,null); const fin=D.actual_transient['2026'].units[u]? D.actual_transient['2026'].units[u].rn.reduce((x,y)=>x+y,0):0; mrows+=`<tr><td>${u}</td><td>${fmt(a.rn)}</td><td>${eur(a.net)}</td><td>${fmt(b.rn)}</td><td class="${a.rn>=b.rn?'pos':'neg'}">${b.rn? (a.rn/b.rn*100).toFixed(0)+'%':'–'}</td><td>${fmt(fin)}</td></tr>`; }
+  let mrows=''; const _LL=liveOtbTotals(); for(const u of UNITS){ const q=D.pace_by_market[u]; const a=(_LL && _LL.by_unit[u])? {rn:Math.round(_LL.by_unit[u].rn), net:Math.round(_LL.by_unit[u].net), days_to_open:_LL.days_to_open} : q[2027][q[2027].length-1]; const b=q[2026].reduce((bb,r)=>(bb==null||Math.abs(r.days_to_open-a.days_to_open)<Math.abs(bb.days_to_open-a.days_to_open))?r:bb,null); const fin=D.actual_transient['2026'].units[u]? D.actual_transient['2026'].units[u].rn.reduce((x,y)=>x+y,0):0; mrows+=`<tr><td>${u}</td><td>${fmt(a.rn)}</td><td>${eur(a.net)}</td><td>${fmt(b.rn)}</td><td class="${a.rn>=b.rn?'pos':'neg'}">${b.rn? (a.rn/b.rn*100).toFixed(0)+'%':'–'}</td><td>${fmt(fin)}</td></tr>`; }
   document.getElementById('paceTable').innerHTML = `<h4 style="margin:6px 0 4px;font-size:13.5px;color:#4B5563">By stay month${paceMkt==='all'?'':' · '+paceMkt}</h4><table><thead><tr><th>Stay month</th><th>2027 on books</th><th>2026 same point</th><th>2025 same point</th><th>Index vs 2026</th></tr></thead><tbody>${rows}</tbody></table>
   <h4 style="margin:14px 0 4px;font-size:13.5px;color:#4B5563">By market — whole season</h4><table><thead><tr><th>Market</th><th>2027 on books</th><th>2027 net on books</th><th>2026 same point</th><th>Index vs 2026</th><th>2026 final</th></tr></thead><tbody>${mrows}</tbody></table>`;
   const hs=[240,210,180,150,120,90,60,45,30,21,14,7,0]; const mc={5:'#9CA3AF',6:'#0569B9',7:'#1F2937',8:'#B45309'};
