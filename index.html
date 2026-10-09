@@ -388,6 +388,8 @@ async function loadFeed(){
     rows.forEach(r=>{ r.asof=norm(r.asof); r.d=norm(r.d); });
     const asof = rows.map(r=>r.asof).sort().pop(); const latest = rows.filter(r=>r.asof===asof && r.d && r.d.slice(0,4)===String(D.target));
     if(!latest.length) throw new Error('no rows');
+    if(ix('market')<0) throw new Error('feed has no market column — scheduled query still on old SQL');
+    if(!latest.some(r=>UNITS.includes(r.u))) throw new Error('no market matches');
     // 1. rebuild live components (future nights: on the books, cancellation-adjusted)
     const comp = JSON.parse(JSON.stringify(D.live)); comp.as_of = asof;
     for(const u of UNITS){ const c=comp.units[u]; c.otb_gross.fill(0); c.otb_net.fill(0); c.otb_rev.fill(0); c.otb_rev_gross=(c.otb_rev_gross||new Array(comp.days.length).fill(0)).fill(0); for(let i=0;i<comp.days.length;i++){ const h=Math.max(0,Math.min(400,daysBetween(asof,comp.days[i]))); const m=+comp.days[i].slice(5,7); c.c[i]=Math.max(D.curves_full[m]? D.curves_full[m][h]:0.001, 0.001); c.w[i]=c.c[i]; } }
@@ -409,7 +411,7 @@ async function loadFeed(){
     }
     liveComp = comp; document.getElementById('asof').textContent = new Date(asof).toLocaleDateString('en-IE',{day:'numeric',month:'long',year:'numeric'});
     document.getElementById('feedstate').textContent = '· live feed'; render();
-  }catch(e){ document.getElementById('feedstate').textContent = '· feed unavailable, showing baked data'; }
+  }catch(e){ document.getElementById('feedstate').textContent = '· feed unavailable ('+(e&&e.message?e.message:'error')+'), showing data as of '+new Date(D.as_of).toLocaleDateString('en-IE',{day:'numeric',month:'long'}); }
 }
 
 document.getElementById('asof').textContent = new Date(D.as_of).toLocaleDateString('en-IE',{day:'numeric',month:'long',year:'numeric'});
